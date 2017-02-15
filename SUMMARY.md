@@ -2,6 +2,8 @@
 
 This is the summary of my book.
 
-* 原子变量
+* Atomic
 	* [atomic-AtomicXXX](atomic/AtomicXXX.md)
 	* [atomic-AtomicXXXArray](atomic/AtomicXXXArray.md)
+* Locks
+	* [AbstractQueuedSynchronizer](locks/AbstractQueuedSynchronizer.md)
