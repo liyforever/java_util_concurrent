@@ -250,8 +250,111 @@ static final class Node {
     }
  ```
 
-该方法将独占请求失败的线程添加到等待队列.
+该方法将独占请求失败的线程添加到等待队列.这里先执行快速入队,失败或头结点还没初始化就执行一般的入队操作.
 
+`java代码`
 
+ ```
+ 	/**
+     * Inserts node into queue, initializing if necessary. See picture above.
+     * @param node the node to insert
+     * @return node's predecessor
+     */
+    private Node enq(final Node node) {
+        for (;;) {
+            Node t = tail;
+            if (t == null) { // Must initialize
+                if (compareAndSetHead(new Node()))
+                    tail = head;
+            } else {
+                node.prev = t;
+                if (compareAndSetTail(t, node)) {
+                    t.next = node;
+                    return t;
+                }
+            }
+        }
+    }
+ ```
 
+一般入队操作就是不停通过CAS操作来更新尾结点,这里只有在尾节点更新成功后才更新前驱节点,将当前线程加入到等待队列后，需要进行一些操作
+
+`java代码`
+
+ ```
+	/**
+     * Acquires in exclusive uninterruptible mode for thread already in
+     * queue. Used by condition wait methods as well as acquire.
+     *
+     * @param node the node
+     * @param arg the acquire argument
+     * @return {@code true} if interrupted while waiting
+     */
+    final boolean acquireQueued(final Node node, int arg) {
+        boolean failed = true;
+        try {
+            boolean interrupted = false;
+            for (;;) {
+                final Node p = node.predecessor();
+				/*这里只有是头结点才能再次尝试是否能获取独占模式的*/
+                if (p == head && tryAcquire(arg)) {
+                    setHead(node);
+                    p.next = null; // help GC
+                    failed = false;
+                    return interrupted;
+                }
+                if (shouldParkAfterFailedAcquire(p, node) &&
+                    parkAndCheckInterrupt())
+                    interrupted = true;
+            }
+        } finally {
+            if (failed)
+                cancelAcquire(node);
+        }
+    }
+
+ ```
+
+这里是是要控制部分,先判断是否以独自模式请求成功，如果失败。判断当前线程是否需要堵塞.最后向上传播终端标志,继续来看shouldParkAfterFailedAcquire
+
+`java代码`
+
+ ```
+	/**
+     * Checks and updates status for a node that failed to acquire.
+     * Returns true if thread should block. This is the main signal
+     * control in all acquire loops.  Requires that pred == node.prev.
+     *
+     * @param pred node's predecessor holding status
+     * @param node the node
+     * @return {@code true} if thread should block
+     */
+    private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
+        int ws = pred.waitStatus;
+        if (ws == Node.SIGNAL)
+            /*
+             * 这里如果当前节点的前驱节点已经正确的设置唤醒标志，
+             */
+            return true;
+        if (ws > 0) {
+            /*
+             * Predecessor was cancelled. Skip over predecessors and
+             * indicate retry.
+             */
+            do {
+                node.prev = pred = pred.prev;
+            } while (pred.waitStatus > 0);
+            pred.next = node;
+        } else {
+            /*
+             * waitStatus must be 0 or PROPAGATE.  Indicate that we
+             * need a signal, but don't park yet.  Caller will need to
+             * retry to make sure it cannot acquire before parking.
+             */
+            compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
+        }
+        return false;
+    }
+
+ ```
    
