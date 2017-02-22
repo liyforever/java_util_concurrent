@@ -368,3 +368,162 @@ static final class Node {
 	5.  调用shouldParkAfterFailedAcquire当前线程是否需要被阻塞，判断是否需要阻塞依据为阻塞前需要对当前节点的前驱节点进行一些标志位的设置(对于将要阻塞的节点设置前驱节点的标志位为需要被唤醒,如果前驱节点状态为CANCELLED需要跳过这些节点，因为必然存在一个状态非CANCELLED的前驱节点)，返回true进入步骤6,返回false跳转步骤4
 	6.  阻塞当前线程
 
+这里来看释放操作的.
+
+`java代码`
+
+```
+   /**
+     * Releases in exclusive mode.  Implemented by unblocking one or
+     * more threads if {@link #tryRelease} returns true.
+     * This method can be used to implement method {@link Lock#unlock}.
+     *
+     * @param arg the release argument.  This value is conveyed to
+     *        {@link #tryRelease} but is otherwise uninterpreted and
+     *        can represent anything you like.
+     * @return the value returned from {@link #tryRelease}
+     */
+    public final boolean release(int arg) {
+        if (tryRelease(arg)) {
+            Node h = head;
+            if (h != null && h.waitStatus != 0)
+                unparkSuccessor(h);
+            return true;
+        }
+        return false;
+    }
+```
+
+这里先调用子类的tryRelease方法释放控制权,成功后，如果头结点为null说明后续没有需要唤醒的节点直接返回，如果后有节点需要调用unparkSuccessor唤醒第一个在等待的节点
+
+`java代码`
+
+```
+   /**
+     * Wakes up node's successor, if one exists.
+     *
+     * @param node the node
+     */
+    private void unparkSuccessor(Node node) {
+        /*
+         * If status is negative (i.e., possibly needing signal) try
+         * to clear in anticipation of signalling.  It is OK if this
+         * fails or if status is changed by waiting thread.
+         */
+        int ws = node.waitStatus;
+        if (ws < 0)
+            compareAndSetWaitStatus(node, ws, 0);
+
+        /*
+         * Thread to unpark is held in successor, which is normally
+         * just the next node.  But if cancelled or apparently null,
+         * traverse backwards from tail to find the actual
+         * non-cancelled successor.
+         */
+        Node s = node.next;
+        if (s == null || s.waitStatus > 0) {
+            s = null;
+            for (Node t = tail; t != null && t != node; t = t.prev)
+                if (t.waitStatus <= 0)
+                    s = t;
+        }
+        if (s != null)
+            LockSupport.unpark(s.thread);
+    }
+```
+
+这里尝试唤醒头结点后队列头部的节点，这个需要跳过被取消的节点.
+
+* 总结非终端独占模式的释放
+	1.  调用release方法
+	2.  调用子类覆盖的tryRelease尝试请求,如果请求成功进行步骤3
+	3.  如果头结点为null说明后续没有等待的节点,直接退出函数，如果非空那么调用unparkSuccessor到第4步
+	4.  唤醒在FIFO第一个非取消的节点
+
+继续看独占模式下相应中断的请求方法
+
+`java代码`
+
+```
+ 	/**
+     * Acquires in exclusive interruptible mode.
+     * @param arg the acquire argument
+     */
+    private void doAcquireInterruptibly(int arg)
+        throws InterruptedException {
+        final Node node = addWaiter(Node.EXCLUSIVE);
+        boolean failed = true;
+        try {
+            for (;;) {
+                final Node p = node.predecessor();
+                if (p == head && tryAcquire(arg)) {
+                    setHead(node);
+                    p.next = null; // help GC
+                    failed = false;
+                    return;
+                }
+                if (shouldParkAfterFailedAcquire(p, node) &&
+                    parkAndCheckInterrupt())
+                    throw new InterruptedException();
+            }
+        } finally {
+            if (failed)
+                cancelAcquire(node);
+        }
+    }
+```
+
+代码可以看出同不响应中断的请求唯一的不同是在 不响应终端的请求在被中断后继续请求，相应中断的方法在终端后向上传播终端状态，同时调用cancelAcquire，继续看这个方法
+
+`java代码`
+
+```
+ 	/**
+     * Cancels an ongoing attempt to acquire.
+     *
+     * @param node the node
+     */
+    private void cancelAcquire(Node node) {
+        // Ignore if node doesn't exist
+        if (node == null)
+            return;
+
+        node.thread = null;
+
+        // Skip cancelled predecessors
+        Node pred = node.prev;
+        while (pred.waitStatus > 0)
+            node.prev = pred = pred.prev;
+
+        // predNext is the apparent node to unsplice. CASes below will
+        // fail if not, in which case, we lost race vs another cancel
+        // or signal, so no further action is necessary.
+        Node predNext = pred.next;
+
+        // Can use unconditional write instead of CAS here.
+        // After this atomic step, other Nodes can skip past us.
+        // Before, we are free of interference from other threads.
+        node.waitStatus = Node.CANCELLED;
+
+        // If we are the tail, remove ourselves.
+        if (node == tail && compareAndSetTail(node, pred)) {
+            compareAndSetNext(pred, predNext, null);
+        } else {
+            // If successor needs signal, try to set pred's next-link
+            // so it will get one. Otherwise wake it up to propagate.
+            int ws;
+            if (pred != head &&
+                ((ws = pred.waitStatus) == Node.SIGNAL ||
+                 (ws <= 0 && compareAndSetWaitStatus(pred, ws, Node.SIGNAL))) &&
+                pred.thread != null) {
+                Node next = node.next;
+                if (next != null && next.waitStatus <= 0)
+                    compareAndSetNext(pred, predNext, next);
+            } else {
+                unparkSuccessor(node);
+            }
+
+            node.next = node; // help GC
+        }
+    }
+```
