@@ -490,14 +490,14 @@ static final class Node {
 
         node.thread = null;
 
-        // Skip cancelled predecessors
+        // 跳过所有取消状态的前驱节点
         Node pred = node.prev;
         while (pred.waitStatus > 0)
             node.prev = pred = pred.prev;
 
-        // predNext is the apparent node to unsplice. CASes below will
-        // fail if not, in which case, we lost race vs another cancel
-        // or signal, so no further action is necessary.
+		// predNext节点(node节点前面的第一个非取消状态节点的后继节点)是需要"断开"的节点。   
+    		// 下面的CAS操作会达到"断开"效果，但(CAS操作)也可能会失败，因为可能存在其他"cancel"   
+    		// 或者"singal"的竞争 .
         Node predNext = pred.next;
 
         // Can use unconditional write instead of CAS here.
@@ -505,12 +505,14 @@ static final class Node {
         // Before, we are free of interference from other threads.
         node.waitStatus = Node.CANCELLED;
 
-        // If we are the tail, remove ourselves.
+        // 如果当前节点是尾节点，那么需要移除自己(将尾节点next设成null)
         if (node == tail && compareAndSetTail(node, pred)) {
             compareAndSetNext(pred, predNext, null);
         } else {
-            // If successor needs signal, try to set pred's next-link
-            // so it will get one. Otherwise wake it up to propagate.
+			/**
+			 * 如果前驱节点不是头结点,那么需要给前驱节点设置唤醒标致(即设waitStatus域为SIGNAL
+			 * 并连接当前节点的前驱节点与当前节点的后续节点
+			 */ 
             int ws;
             if (pred != head &&
                 ((ws = pred.waitStatus) == Node.SIGNAL ||
@@ -520,6 +522,7 @@ static final class Node {
                 if (next != null && next.waitStatus <= 0)
                     compareAndSetNext(pred, predNext, next);
             } else {
+				//否则，唤醒当前节点
                 unparkSuccessor(node);
             }
 
@@ -527,3 +530,54 @@ static final class Node {
         }
     }
 ```
+
+最后带超时时间的请求
+
+`java代码`
+
+```
+	/**
+     * Acquires in exclusive timed mode.
+     *
+     * @param arg the acquire argument
+     * @param nanosTimeout max wait time
+     * @return {@code true} if acquired
+     */
+    private boolean doAcquireNanos(int arg, long nanosTimeout)
+            throws InterruptedException {
+        if (nanosTimeout <= 0L)
+            return false;
+        final long deadline = System.nanoTime() + nanosTimeout;
+        final Node node = addWaiter(Node.EXCLUSIVE);
+        boolean failed = true;
+        try {
+            for (;;) {
+                final Node p = node.predecessor();
+                if (p == head && tryAcquire(arg)) {
+                    setHead(node);
+                    p.next = null; // help GC
+                    failed = false;
+                    return true;
+                }
+                nanosTimeout = deadline - System.nanoTime();
+                if (nanosTimeout <= 0L)
+                    return false;
+				//自旋一段时间
+                if (shouldParkAfterFailedAcquire(p, node) &&
+                    nanosTimeout > spinForTimeoutThreshold)
+                    LockSupport.parkNanos(this, nanosTimeout);
+                if (Thread.interrupted())
+                    throw new InterruptedException();
+            }
+        } finally {
+            if (failed)
+                cancelAcquire(node);
+        }
+    }
+```
+
+带超时的请求在失败进入阻塞之前会先自转一段时间
+
+===
+
+下面看共享模式的不响应请求
