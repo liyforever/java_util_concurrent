@@ -580,4 +580,30 @@ static final class Node {
 
 ===
 
-下面看共享模式的不响应请求
+下面看共享模式的不响应中断请求
+
+`java代码`
+
+```
+    /**
+     * Acquires in shared mode, ignoring interrupts.  Implemented by
+     * first invoking at least once {@link #tryAcquireShared},
+     * returning on success.  Otherwise the thread is queued, possibly
+     * repeatedly blocking and unblocking, invoking {@link
+     * #tryAcquireShared} until success.
+     *
+     * @param arg the acquire argument.  This value is conveyed to
+     *        {@link #tryAcquireShared} but is otherwise uninterpreted
+     *        and can represent anything you like.
+     */
+    public final void acquireShared(int arg) {
+		/**
+		 * 这里区别于独占模式,共享模式允许多个线程请求成功(具体state含义由子类定义)
+		 * 所以这里不能像独占模式一样判断布尔值.
+		 */
+        if (tryAcquireShared(arg) < 0)
+            doAcquireShared(arg);
+    }
+```
+
+   acquireShared首先调用tryAcquireShared(AQA中没有实现tryAcquire方法，而是开放给子类实现)，如果返回大于等于0说明请求成功那么不阻塞当前的线程，否则继续调用doAcquireShared.
