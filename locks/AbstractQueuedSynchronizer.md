@@ -1072,3 +1072,80 @@ public interface Condition {
     5. 当前线程被(其他线程)唤醒后，要检查等待过程中是否被中断或者取消，如果不是，继续循环，到第4步。
     6. 如果是，保存中断状态和模式，然后退出条件循环。
     7. 请求AQS控制权，然后做一些收尾工作，如果被取消，清理一下条件等待队列,然后按照中断模式处理一下中断。  
+
+await带不响应终端，带超时的版本与前面独占模式请求累死
+
+继续看唤醒单个线程的方法signal
+
+`java代码`
+
+```
+        /**
+         * Moves the longest-waiting thread, if one exists, from the
+         * wait queue for this condition to the wait queue for the
+         * owning lock.
+         *
+         * @throws IllegalMonitorStateException if {@link #isHeldExclusively}
+         *         returns {@code false}
+         */
+        public final void signal() {
+			//判断是否持有独占
+            if (!isHeldExclusively())
+                throw new IllegalMonitorStateException();
+            Node first = firstWaiter;
+            if (first != null)
+                doSignal(first);
+        }
+
+       /**
+         * Removes and transfers nodes until hit non-cancelled one or
+         * null. Split out from signal in part to encourage compilers
+         * to inline the case of no waiters.
+         * @param first (non-null) the first node on condition queue
+         */
+        private void doSignal(Node first) {
+            do {
+				//唤醒第一个等待的节点
+                if ( (firstWaiter = first.nextWaiter) == null)
+                    lastWaiter = null;
+                first.nextWaiter = null;
+			//转移头结点到AQA队列
+            } while (!transferForSignal(first) &&
+                     (first = firstWaiter) != null);
+        }
+```
+
+最后看下唤醒所有阻塞在条件队列的方法signalAll
+
+`java代码`
+
+```
+       /**
+         * Moves all threads from the wait queue for this condition to
+         * the wait queue for the owning lock.
+         *
+         * @throws IllegalMonitorStateException if {@link #isHeldExclusively}
+         *         returns {@code false}
+         */
+        public final void signalAll() {
+            if (!isHeldExclusively())
+                throw new IllegalMonitorStateException();
+            Node first = firstWaiter;
+            if (first != null)
+                doSignalAll(first); //此处与signal不同
+        }
+
+		/**
+         * 将所有阻塞在条件变量队列的节点转移到AQA
+         * @param first (non-null) the first node on condition queue
+         */
+        private void doSignalAll(Node first) {
+            lastWaiter = firstWaiter = null;
+            do {
+                Node next = first.nextWaiter;
+                first.nextWaiter = null;
+                transferForSignal(first);
+                first = next;
+            } while (first != null);
+        }
+```
