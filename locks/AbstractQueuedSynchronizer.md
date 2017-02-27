@@ -607,3 +607,468 @@ static final class Node {
 ```
 
    acquireShared首先调用tryAcquireShared(AQA中没有实现tryAcquire方法，而是开放给子类实现)，如果返回大于等于0说明请求成功那么不阻塞当前的线程，否则继续调用doAcquireShared.
+
+`java代码`
+
+```
+	/**
+     * Acquires in shared uninterruptible mode.
+     * @param arg the acquire argument
+     */
+    private void doAcquireShared(int arg) {
+        final Node node = addWaiter(Node.SHARED);
+        boolean failed = true;
+        try {
+            boolean interrupted = false;
+            for (;;) {
+                final Node p = node.predecessor();
+				//如果当前节点的前驱是头结点,允许再调用tryAcquireShared进行尝试
+                if (p == head) {
+                    int r = tryAcquireShared(arg);
+                    if (r >= 0) {
+						//请求成功调用setHeadAndPropagate
+                        setHeadAndPropagate(node, r);
+                        p.next = null; // help GC
+                        if (interrupted)
+                            selfInterrupt();
+                        failed = false;
+                        return;
+                    }
+                }
+                if (shouldParkAfterFailedAcquire(p, node) &&
+                    parkAndCheckInterrupt())
+                    interrupted = true;
+            }
+        } finally {
+            if (failed)//忽略中断模式不会跑到这里？
+                cancelAcquire(node);
+        }
+    }
+```
+
+上面方法如果请求成功就调用setHeadAndPropagate,finally中的函数忽略中断的情况下不会调用,看下setHeadAndPropagate方法
+
+`java代码`
+
+```
+ 	/**
+     * 将node设为FIFO的头结点，同时检测是否有处于共享模式下等待的节点，如果propagate》0或* 先前头结点是propagate，唤醒后续节点
+     *
+     * @param node the node
+     * @param propagate the return value from a tryAcquireShared
+     */
+    private void setHeadAndPropagate(Node node, int propagate) {
+        Node h = head; // Record old head for check below
+        setHead(node);
+        /*
+         * Try to signal next queued node if:
+         *   Propagation was indicated by caller,
+         *     or was recorded (as h.waitStatus either before
+         *     or after setHead) by a previous operation
+         *     (note: this uses sign-check of waitStatus because
+         *      PROPAGATE status may transition to SIGNAL.)
+         * and
+         *   The next node is waiting in shared mode,
+         *     or we don't know, because it appears null
+         *
+         * The conservatism in both of these checks may cause
+         * unnecessary wake-ups, but only when there are multiple
+         * racing acquires/releases, so most need signals now or soon
+         * anyway.
+         */
+        if (propagate > 0 || h == null || h.waitStatus < 0 ||
+            (h = head) == null || h.waitStatus < 0) {
+            Node s = node.next;
+            if (s == null || s.isShared())
+                doReleaseShared();
+        }
+    }
+```
+
+接着看doReleaseShared
+
+`java代码`
+
+```
+	/**
+     * Release action for shared mode -- signals successor and ensures
+     * propagation. (Note: For exclusive mode, release just amounts
+     * to calling unparkSuccessor of head if it needs signal.)
+     */
+    private void doReleaseShared() {
+        /*
+         * Ensure that a release propagates, even if there are other
+         * in-progress acquires/releases.  This proceeds in the usual
+         * way of trying to unparkSuccessor of head if it needs
+         * signal. But if it does not, status is set to PROPAGATE to
+         * ensure that upon release, propagation continues.
+         * Additionally, we must loop in case a new node is added
+         * while we are doing this. Also, unlike other uses of
+         * unparkSuccessor, we need to know if CAS to reset status
+         * fails, if so rechecking.
+         */
+        for (;;) {
+            Node h = head;
+			//FIFO队列是否为空
+            if (h != null && h != tail) {
+                int ws = h.waitStatus;
+				/**
+				 * 头结点状态未SIGNAL说明需要唤醒后继节点
+				 */
+                if (ws == Node.SIGNAL) {
+					/**
+					 * 修改头节点状态，如果修改成功那么唤醒后续节点
+					 */
+                    if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
+                        continue;            // loop to recheck cases
+                    unparkSuccessor(h);
+                }
+				/**
+				 * 如果头结点无状态,修改头结点状态为PROPAGATE
+                else if (ws == 0 &&
+                         !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
+                    continue;                // loop on failed CAS
+            }
+			// 头结点没有发生变，不需要继续检测，退出循环
+            if (h == head)                   
+                break;
+        }
+    }
+```
+
+* 总结非中断共享模式的请求过程
+	1. 调用tryAcquireShared请求控制权，成功直接退出
+	2. 请求失败,调用doAcquireShared,将当前线程已共享模式创建一个节点插入到FIFO队列的队尾
+	3. 进入无限循环，如果当前节点的前驱节点是头结点，那么允许调用tryAcquireShared在此尝试获取控制权
+	4. 如果请求成功将当前节点设为FIFO的头结点，同时检测是否需要唤醒共享模式下的后续节点.
+	5. 如果第3步请求失败，那么调用shouldParkAfterFailedAcquire设置必要的状态。如果状态已经设置完成，那么阻塞当前线程。
+	
+* 共享模式的带中断，带超时的方法同独占模式相似都是向上传播中断异常(响应中断请求)，自旋一定时间(带超时)
+
+来看共享模式下的释放控制权方法
+
+`java代码`
+
+```
+    /**
+     * Releases in shared mode.  Implemented by unblocking one or more
+     * threads if {@link #tryReleaseShared} returns true.
+     *
+     * @param arg the release argument.  This value is conveyed to
+     *        {@link #tryReleaseShared} but is otherwise uninterpreted
+     *        and can represent anything you like.
+     * @return the value returned from {@link #tryReleaseShared}
+     */
+    public final boolean releaseShared(int arg) {
+		/**
+		 * 调用子类tryReleaseShared方法,成功后进行必要的唤醒操作
+		 */
+        if (tryReleaseShared(arg)) {
+            doReleaseShared();
+            return true;
+        }
+        return false;
+    }
+```
+
+* AQA内部提供await和nofify实现
+
+先来看看Conitin接口的方法定义:
+
+`java代码`
+
+```
+public interface Condition {
+    void await() throws InterruptedException;
+    void awaitUninterruptibly();
+    long awaitNanos(long nanosTimeout) throws InterruptedException;
+    boolean await(long time, TimeUnit unit) throws InterruptedException;
+    boolean awaitUntil(Date deadline) throws InterruptedException;
+    void signal();
+    void signalAll();
+}
+
+```
+
+接下来看看AQA实现的类
+
+`java代码`
+
+```
+    public class ConditionObject implements Condition, java.io.Serializable {
+        private static final long serialVersionUID = 1173984872572414699L;
+        /** First node of condition queue. */
+        private transient Node firstWaiter;
+        /** Last node of condition queue. */
+        private transient Node lastWaiter;
+```
+
+可以看到内部结构非常简单,也是一个链表。这里看到对于每一个条件变量内部的队列并不是同一个.
+
+像AQA一样，先从等待方法开始看，awati
+
+
+`java代码`
+
+```
+		/**
+         * Implements interruptible condition wait.
+         * <ol>
+         * <li> If current thread is interrupted, throw InterruptedException.
+         * <li> Save lock state returned by {@link #getState}.
+         * <li> Invoke {@link #release} with saved state as argument,
+         *      throwing IllegalMonitorStateException if it fails.
+         * <li> Block until signalled or interrupted.
+         * <li> Reacquire by invoking specialized version of
+         *      {@link #acquire} with saved state as argument.
+         * <li> If interrupted while blocked in step 4, throw InterruptedException.
+         * </ol>
+         */
+        public final void await() throws InterruptedException {
+            if (Thread.interrupted()) //如果当前线程被中断，传播中断异常
+                throw new InterruptedException();
+            Node node = addConditionWaiter();//将当前线程加入到条件等待队列
+			/**
+             * 释放当前线程独占模式的控制权，调用await的线程必然获取到了独占模式AQA
+             * 的控制权
+             */ 
+            int savedState = fullyRelease(node);
+            int interruptMode = 0;
+            while (!isOnSyncQueue(node)) {
+				/**
+				 *
+				 * 如果当前线程不再条件等待队列中，那么阻塞当前线程,其他线程调用signal(singalAll)
+				 * 可能会把当前线程转移到AQA等待队列(说可能是因为signal一次只唤醒一个线程)
+				 */ 
+                LockSupport.park(this);
+				//被唤醒后需要检查是否等待过程中被中断
+                if ((interruptMode = checkInterruptWhileWaiting(node)) != 0)
+                    break;
+            }
+			//重新请求AQA控制权
+            if (acquireQueued(node, savedState) && interruptMode != THROW_IE)
+                interruptMode = REINTERRUPT;
+            if (node.nextWaiter != null) // clean up if cancelled
+                unlinkCancelledWaiters();
+			//这里处理while中的中断
+            if (interruptMode != 0)
+                reportInterruptAfterWait(interruptMode);
+        }
+
+```
+
+继续看把当前节点加入到条件队列的方法addConditionWaiter
+
+`java代码`
+
+```
+ 		/**
+         * Adds a new waiter to wait queue.
+         * @return its new wait node
+         */
+        private Node addConditionWaiter() {
+            Node t = lastWaiter;
+            // 移除被取消的节点.
+            if (t != null && t.waitStatus != Node.CONDITION) {
+                unlinkCancelledWaiters();
+                t = lastWaiter;
+            }
+            Node node = new Node(Thread.currentThread(), Node.CONDITION);
+            if (t == null) //队列为空
+                firstWaiter = node;
+            else
+                t.nextWaiter = node;
+            lastWaiter = node;
+            return node;
+        }
+```
+
+看上面函数调用的用于断开取消节点的方法unlinkCancelledWaiters
+
+`java代码`
+
+```
+		/**
+         * Unlinks cancelled waiter nodes from condition queue.
+         * Called only while holding lock. This is called when
+         * cancellation occurred during condition wait, and upon
+         * insertion of a new waiter when lastWaiter is seen to have
+         * been cancelled. This method is needed to avoid garbage
+         * retention in the absence of signals. So even though it may
+         * require a full traversal, it comes into play only when
+         * timeouts or cancellations occur in the absence of
+         * signals. It traverses all nodes rather than stopping at a
+         * particular target to unlink all pointers to garbage nodes
+         * without requiring many re-traversals during cancellation
+         * storms.
+         */
+        private void unlinkCancelledWaiters() {
+            Node t = firstWaiter;
+            Node trail = null;//记录已经完成的节点
+            while (t != null) {
+                Node next = t.nextWaiter;
+                if (t.waitStatus != Node.CONDITION) {
+					//如果T被取消
+                    t.nextWaiter = null;
+                    if (trail == null)
+                        firstWaiter = next;
+                    else
+                        trail.nextWaiter = next;
+                    if (next == null)
+                        lastWaiter = trail;
+                }
+                else
+                    trail = t;
+                t = next;
+            }
+        }
+```
+
+继续看await中带调用的fullyRelease方法
+
+`java代码`
+
+```
+ 	/**
+     * 调用release方法传入当前的状态值，调用成功返回先前记录的状态值
+     * @param node the condition node for this wait
+     * @return previous sync state
+     */
+    final int fullyRelease(Node node) {
+        boolean failed = true;
+        try {
+            int savedState = getState();
+            if (release(savedState)) {
+                failed = false;
+                return savedState;
+            } else {
+                throw new IllegalMonitorStateException();
+            }
+        } finally {
+            if (failed)
+                node.waitStatus = Node.CANCELLED;
+        }
+    }
+```
+
+继续看await中判断是否在AQA队列中的方法isOnSyncQueue
+
+`java代码`
+
+```
+	/**
+     * Returns true if a node, always one that was initially placed on
+     * a condition queue, is now waiting to reacquire on sync queue.
+     * @param node the node
+     * @return true if is reacquiring
+     */
+    final boolean isOnSyncQueue(Node node) {
+        if (node.waitStatus == Node.CONDITION || node.prev == null)
+            return false;
+		/**
+		 * 如果有后继节点说明必在AQA中，因为当前线程是获取到了AQA的独占，如果在条件队列中
+		 * 必然没有后继节点
+		 */
+        if (node.next != null) 
+            return true;
+        /*
+         * node.prev can be non-null, but not yet on queue because
+         * the CAS to place it on queue can fail. So we have to
+         * traverse from tail to make sure it actually made it.  It
+         * will always be near the tail in calls to this method, and
+         * unless the CAS failed (which is unlikely), it will be
+         * there, so we hardly ever traverse much.
+         * 反向遍历是否在AQA中
+         */
+        return findNodeFromTail(node);
+    }
+
+    /**
+     * Returns true if node is on sync queue by searching backwards from tail.
+     * Called only when needed by isOnSyncQueue.
+     * @return true if present
+     */
+    private boolean findNodeFromTail(Node node) {
+        Node t = tail;
+        for (;;) {
+            if (t == node)
+                return true;
+            if (t == null)
+                return false;
+            t = t.prev;
+        }
+    }
+```
+
+继续看await中的检测while等候中是否被中断的方法checkInterruptWhileWaiting
+
+`java代码`
+
+```
+        /** 在等待退出时重新中断(传递中断状态) */
+        private static final int REINTERRUPT =  1;
+        /** 在等待退出时抛出中断异常 */
+        private static final int THROW_IE    = -1;
+
+        /**
+         * Checks for interrupt, returning THROW_IE if interrupted
+         * before signalled, REINTERRUPT if after signalled, or
+         * 0 if not interrupted.
+         */
+        private int checkInterruptWhileWaiting(Node node) {
+            return Thread.interrupted() ?
+                (transferAfterCancelledWait(node) ? THROW_IE : REINTERRUPT) :
+                0;
+        }
+
+	/**
+     * Transfers node, if necessary, to sync queue after a cancelled wait.
+     * Returns true if thread was cancelled before being signalled.
+     * 在取消等待后，将节点转移到同步队列中。如果线程在唤醒钱被 
+ 	 * 取消，返回true。
+     * @param node the node
+     * @return true if cancelled before the node was signalled
+     */
+    final boolean transferAfterCancelledWait(Node node) {
+        if (compareAndSetWaitStatus(node, Node.CONDITION, 0)) {
+            enq(node);
+            return true;
+        }
+        /*
+         * If we lost out to a signal(), then we can't proceed
+         * until it finishes its enq().  Cancelling during an
+         * incomplete transfer is both rare and transient, so just
+         * spin.
+         */
+        while (!isOnSyncQueue(node))
+            Thread.yield();
+        return false;
+    }
+```
+
+最后看下处理中断的方法
+
+`java代码`
+
+```
+		/**
+         * Throws InterruptedException, reinterrupts current thread, or
+         * does nothing, depending on mode.
+         */
+        private void reportInterruptAfterWait(int interruptMode)
+            throws InterruptedException {
+            if (interruptMode == THROW_IE)
+                throw new InterruptedException();
+            else if (interruptMode == REINTERRUPT)
+                selfInterrupt();
+        }
+```
+
+* 总结awati调用逻辑
+	1. 如果当前线程有中断状态，抛出InterruptedException
+	2. 将当前线程入队条件等到队列
+	3. 释放AQA控制
+	4. 进入条件循环，条件为判断当前线程是否在AQS同步队列中，如果不在那么阻塞当前线程；如果在AQS同步队列中，就到第7步。
+    5. 当前线程被(其他线程)唤醒后，要检查等待过程中是否被中断或者取消，如果不是，继续循环，到第4步。
+    6. 如果是，保存中断状态和模式，然后退出条件循环。
+    7. 请求AQS控制权，然后做一些收尾工作，如果被取消，清理一下条件等待队列,然后按照中断模式处理一下中断。  
