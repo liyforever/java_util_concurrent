@@ -106,9 +106,10 @@ JDK1.8 JUC源码分析(4) ReentrantLock
          * acquire on failure.
          */
         final void lock() {
+			/**这里尝试插队**/
             if (compareAndSetState(0, 1))
                 setExclusiveOwnerThread(Thread.currentThread());
-            else
+            else //插队失败正常的请求流程
                 acquire(1);
         }
 
@@ -117,3 +118,48 @@ JDK1.8 JUC源码分析(4) ReentrantLock
         }
     }
 ```
+
+再来看公平的版本
+
+`java代码`
+
+```
+	/**
+     * Sync object for fair locks
+     */
+    static final class FairSync extends Sync {
+        private static final long serialVersionUID = -3000897897090466540L;
+		
+
+        final void lock() {
+            acquire(1);
+        }
+
+        /**
+         * Fair version of tryAcquire.  Don't grant access unless
+         * recursive call or no waiters or is first.
+         */
+        protected final boolean tryAcquire(int acquires) {
+            final Thread current = Thread.currentThread();
+            int c = getState();
+            if (c == 0) {
+				//这里AQA队列中没有其他等待的线程才尝试获取锁
+                if (!hasQueuedPredecessors() &&
+                    compareAndSetState(0, acquires)) {
+                    setExclusiveOwnerThread(current);
+                    return true;
+                }
+            }
+            else if (current == getExclusiveOwnerThread()) {
+                int nextc = c + acquires;
+                if (nextc < 0)
+                    throw new Error("Maximum lock count exceeded");
+                setState(nextc);
+                return true;
+            }
+            return false;
+        }
+    }
+```
+
+* 有了内部的同步机制，ReentrantLock的方法只是调用内部的同步类来实现。一些检测机制如当前锁重入次数等也是调用AQA提供的方法
