@@ -7,3 +7,4 @@ This is the summary of my book.
 	* [atomic-AtomicXXXArray](atomic/AtomicXXXArray.md)
 * Locks
 	* [AbstractQueuedSynchronizer](locks/AbstractQueuedSynchronizer.md)
+	* [ReentrantLock](locks/ReentrantLock.md)
