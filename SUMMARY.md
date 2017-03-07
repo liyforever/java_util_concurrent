@@ -9,3 +9,5 @@ This is the summary of my book.
 	* [AbstractQueuedSynchronizer](locks/AbstractQueuedSynchronizer.md)
 	* [ReentrantLock](locks/ReentrantLock.md)
 	* [ReentrantReadWriteLock](locks/ReentrantReadWriteLock.md)
+* BlockingQueue
+    * [ArrayBlockingQueue](blockingQueue/ArrayBlockingQueue.md)
