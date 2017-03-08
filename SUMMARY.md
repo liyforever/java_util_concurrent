@@ -12,3 +12,4 @@ This is the summary of my book.
 * BlockingQueue
     * [ArrayBlockingQueue](blockingQueue/ArrayBlockingQueue.md)
     * [LinkedBlockingQueue](blockingQueue/LinkedBlockingQueue.md)
+    * [PriorityBlockingQueue](blockingQueue/PriorityBlockingQueue.md)
