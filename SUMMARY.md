@@ -15,4 +15,5 @@ This is the summary of my book.
     * [PriorityBlockingQueue](blockingQueue/PriorityBlockingQueue.md)
     * [DelayQueue](blockingQueue/DelayQueue.md)
 * Misc
-    * [DelayQueue](misc/CountDownLatch.md)
+    * [CountDownLatch](misc/CountDownLatch.md)
+    * [CyclicBarrier](misc/CyclicBarrier.md)
